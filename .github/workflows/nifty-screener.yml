@@ -1,31 +1,17 @@
 # =====================================================================
-# Nifty 50 Intraday Screener - Daily Automated Run
+# Nifty 50 Intraday Screener - Daily Automated Run (FIXED VERSION)
 # =====================================================================
-# Runs every weekday at 9:15 AM IST (03:45 UTC) on GitHub Actions.
-# Free for public repos; ~30 min/month for private repos (well within
-# the 2000 min/month free tier).
-#
-# Pipeline:
-#   1. Check out code
-#   2. Set up Python 3.11
-#   3. Install dependencies
-#   4. Run the screener (saves nifty_picks_latest.json)
-#   5. Forward the report to your channel (Telegram / Email / WhatsApp)
-#
-# IMPORTANT: GitHub Actions cron can be delayed 5-15 min during peak
-# load. We trigger at 03:30 UTC (09:00 IST) so the scan actually
-# completes around 09:15-09:20 IST, just after market open.
+# Runs every weekday at ~9:00 AM IST on GitHub Actions.
 # =====================================================================
 
 name: Nifty 50 Intraday Screener
 
 on:
   schedule:
-    # Run Mon-Fri at 03:30 UTC = 09:00 IST (target: results land by 09:15-09:20 IST)
+    # Run Mon-Fri at 03:30 UTC = 09:00 IST
     - cron: '30 3 * * 1-5'
-  workflow_dispatch:  # Allow manual triggering from GitHub UI for testing
+  workflow_dispatch:  # Allow manual triggering from GitHub UI
 
-# Prevent overlapping runs if GitHub is delayed
 concurrency:
   group: nifty-screener
   cancel-in-progress: false
@@ -34,6 +20,13 @@ jobs:
   scan-and-forward:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # CRITICAL FIX: env vars set at JOB level so step if-conditions can see them
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+      EMAIL_USER:         ${{ secrets.EMAIL_USER }}
+      EMAIL_PASS:         ${{ secrets.EMAIL_PASS }}
+      EMAIL_TO:           ${{ secrets.EMAIL_TO }}
 
     steps:
       - name: Checkout code
@@ -49,49 +42,27 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # Twilio is optional (only needed for WhatsApp forwarding)
-          if [ -n "${{ secrets.TWILIO_SID }}" ]; then
-            pip install twilio
-          fi
 
       - name: Run screener
         run: |
-          python nifty_intraday_screener.py \
-            --output nifty_picks_latest.json \
-            --max-picks 3
-        continue-on-error: true  # Don't fail the workflow if Yahoo hiccups
+          python nifty_intraday_screener.py --output nifty_picks_latest.json --max-picks 3
+        continue-on-error: true
 
-      - name: Show report (for GitHub Actions log)
+      - name: Show report
         run: |
           echo "===== SCREENER REPORT ====="
-          cat nifty_picks_latest.json || echo "No report generated"
+          cat nifty_picks_latest.json 2>/dev/null || echo "No report generated"
           echo "===== END REPORT ====="
 
       - name: Forward to Telegram
         if: ${{ env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != '' }}
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python forwarders.py telegram
 
       - name: Forward to Email
         if: ${{ env.EMAIL_USER != '' && env.EMAIL_PASS != '' }}
-        env:
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
         run: python forwarders.py email
 
-      - name: Forward to WhatsApp (Twilio)
-        if: ${{ env.TWILIO_SID != '' && env.TWILIO_TOKEN != '' }}
-        env:
-          TWILIO_SID:             ${{ secrets.TWILIO_SID }}
-          TWILIO_TOKEN:           ${{ secrets.TWILIO_TOKEN }}
-          TWILIO_WHATSAPP_FROM:   ${{ secrets.TWILIO_WHATSAPP_FROM }}
-          TWILIO_WHATSAPP_TO:     ${{ secrets.TWILIO_WHATSAPP_TO }}
-        run: python forwarders.py whatsapp
-
-      - name: Upload report as artifact (kept for 14 days)
+      - name: Upload report as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
