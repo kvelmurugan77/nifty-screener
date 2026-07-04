@@ -1,0 +1,5 @@
+# Dependencies for Nifty 50 Intraday Screener
+# Install with:  pip install -r requirements.txt
+
+yfinance>=0.2.40
+pandas>=2.0.0
