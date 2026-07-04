@@ -1,16 +1,9 @@
-# =====================================================================
-# Nifty 50 Intraday Screener - Daily Automated Run (FIXED VERSION)
-# =====================================================================
-# Runs every weekday at ~9:00 AM IST on GitHub Actions.
-# =====================================================================
-
 name: Nifty 50 Intraday Screener
 
 on:
   schedule:
-    # Run Mon-Fri at 03:30 UTC = 09:00 IST
     - cron: '30 3 * * 1-5'
-  workflow_dispatch:  # Allow manual triggering from GitHub UI
+  workflow_dispatch:
 
 concurrency:
   group: nifty-screener
@@ -20,13 +13,9 @@ jobs:
   scan-and-forward:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # CRITICAL FIX: env vars set at JOB level so step if-conditions can see them
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-      EMAIL_USER:         ${{ secrets.EMAIL_USER }}
-      EMAIL_PASS:         ${{ secrets.EMAIL_PASS }}
-      EMAIL_TO:           ${{ secrets.EMAIL_TO }}
 
     steps:
       - name: Checkout code
@@ -41,31 +30,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install yfinance pandas
 
-      - name: Run screener
-        run: |
-          python nifty_intraday_screener.py --output nifty_picks_latest.json --max-picks 3
-        continue-on-error: true
-
-      - name: Show report
-        run: |
-          echo "===== SCREENER REPORT ====="
-          cat nifty_picks_latest.json 2>/dev/null || echo "No report generated"
-          echo "===== END REPORT ====="
-
-      - name: Forward to Telegram
-        if: ${{ env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != '' }}
-        run: python forwarders.py telegram
-
-      - name: Forward to Email
-        if: ${{ env.EMAIL_USER != '' && env.EMAIL_PASS != '' }}
-        run: python forwarders.py email
-
-      - name: Upload report as artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: nifty-picks-${{ github.run_id }}
-          path: nifty_picks_latest.json
-          retention-days: 14
+      - name: Run screener and send Telegram
+        run: python nifty_screener_telegram.py
