@@ -1,14 +1,16 @@
 # =====================================================================
-# Daily Email Scanner - sends the pick of the day every morning
+# Daily Email Scanner - sends the pick of the day every trading morning
 # 03:50 UTC = 09:20 IST (IST is UTC+5:30)
+# Runs Mon-Fri only (NSE is closed on weekends)
+# Credentials come from settings.json in this repo (private).
 # =====================================================================
 
 name: Daily Email Scanner
 
 on:
   schedule:
-    - cron: '50 3 * * *'   # 09:20 AM IST every day
-  workflow_dispatch:       # lets you click "Run workflow" to test manually
+    - cron: '50 3 * * 1-5'   # 09:20 AM IST, Mon-Fri
+  workflow_dispatch:         # lets you click "Run workflow" to test manually
 
 concurrency:
   group: daily-email-scanner
@@ -18,12 +20,6 @@ jobs:
   scan-and-email:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      GMAIL_USER: ${{ secrets.GMAIL_USER }}
-      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-      TO_EMAIL: ${{ secrets.TO_EMAIL }}
-      CAPITAL: ${{ secrets.CAPITAL }}
-      RISK_PCT: ${{ secrets.RISK_PCT }}
 
     steps:
       - name: Checkout code
