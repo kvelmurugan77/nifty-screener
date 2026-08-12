@@ -21,13 +21,17 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import smtplib
 import ssl
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from email.header import Header
 from email.mime.text import MIMEText
 from email.utils import formataddr
+
+import requests
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -122,6 +126,54 @@ def run_scan(capital, risk):
 
 
 # ----------------------------------------------------------------------------
+# News headlines (Google News RSS - free, no API key)
+# ----------------------------------------------------------------------------
+RISK_KEYWORDS = [
+    "fraud", "scam", "sebi", "investigation", "raid", "ban", "default",
+    "downgrade", "tariff", "war", "geopolitical", "sanction", "pledge",
+    "delist", "insider", "caveat", "warning", "restructuring", "lawsuit",
+    "circuit", "crash", "crisis", "probe",
+]
+
+
+def fetch_headlines(query, limit=3):
+    """Return up to `limit` (title, date, source) tuples for a stock query.
+
+    Uses Google News RSS (no API key). Returns [] on any failure so the
+    email still goes out even if news is unavailable.
+    """
+    try:
+        url = ("https://news.google.com/rss/search?q="
+               + requests.utils.quote(query)
+               + "&hl=en-IN&gl=IN&ceid=IN:en")
+        r = requests.get(url, timeout=15,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        root = ET.fromstring(r.text)
+        items = root.findall(".//item")[:limit]
+        out = []
+        for it in items:
+            title = (it.findtext("title") or "").strip()
+            pub = (it.findtext("pubDate") or "").strip()[:16]  # "Tue, 12 Aug 2026"
+            src = ""
+            src_el = it.find("source")
+            if src_el is not None:
+                src = (src_el.text or "").strip()
+            if title:
+                out.append((title, pub, src))
+        return out
+    except Exception as e:  # noqa: BLE001
+        log(f"news fetch failed (continuing without): {e}")
+        return []
+
+
+def headline_risk_flags(headlines):
+    """Return list of risk keywords matched across headlines (lowercased)."""
+    text = " ".join(h[0].lower() for h in headlines)
+    return [k for k in RISK_KEYWORDS if k in text]
+
+
+# ----------------------------------------------------------------------------
 # Compose the email
 # ----------------------------------------------------------------------------
 def inr(x):
@@ -149,12 +201,32 @@ def compose(data, capital, risk):
     regime = data.get("regime", "Unknown")
     picks = data.get("picks", [])
 
+    # NSE holiday / market-closed check: if the data's last session is not
+    # today, today is a holiday (or weekend) - don't send a confusing "pick".
+    today = ist_now().date().isoformat()
+    if date != today:
+        lines = []
+        lines.append("==============================================")
+        lines.append("  INDIAN DAILY STOCK SCANNER")
+        lines.append(f"  {today}")
+        lines.append("==============================================")
+        lines.append("")
+        lines.append("NSE IS CLOSED TODAY (holiday / weekend).")
+        lines.append("No pick sent. See you on the next trading day!")
+        lines.append("")
+        lines.append("Educational tool, not investment advice.")
+        subject = f"Daily Stock Scanner {today}: market closed"
+        return subject, "\n".join(lines)
+
     lines = []
     lines.append("==============================================")
     lines.append("  INDIAN DAILY STOCK SCANNER")
     lines.append(f"  {date}")
     lines.append("==============================================")
     lines.append(f"Market regime : {regime}")
+    vix = data.get("vix")
+    if vix:
+        lines.append(f"India VIX     : {vix:.1f} ({data.get('vix_label','')})")
     lines.append(f"Capital       : Rs {inr(capital)} | Risk {risk}% per trade")
     if market_open:
         lines.append("")
@@ -194,6 +266,10 @@ def compose(data, capital, risk):
     lines.append(f"   Risk if SL   : Rs {inr(tp.get('risk_rs', 0))} = {risk}% of capital")
     if tp.get("notional_pct", 0) > 40:
         lines.append("   ⚠ Position uses >40% of capital - consider 2-3 smaller positions")
+    moved = max(p.get("gap_pct", 0) or 0, p.get("chg_pct", 0) or 0)
+    if moved > 2.5:
+        lines.append(f"   ⚠ CHASE GUARD  : {ticker} already moved +{moved:.1f}% today -")
+        lines.append("      DO NOT chase. Wait for a dip toward the entry zone or skip.")
     why = " · ".join(p.get("reasons", [])) or "trend + setup"
     lines.append(f"   Why          : {why}")
     lines.append(f"   RSI {p.get('rsi', 0):.0f} | ATR {p.get('atr_pct', 0):.1f}% | "
@@ -204,6 +280,23 @@ def compose(data, capital, risk):
         lines.append(f"   {i}. {q.get('ticker','').replace('.NS',''):<14} "
                      f"score {q.get('total',0):.0f}  RSI {q.get('rsi',0):.0f}")
     lines.append("")
+
+    # --- News headlines for the pick (context only - NOT scored) ---
+    lines.append("📰 Headlines (context only - not scored):")
+    heads = fetch_headlines(f'"{name}" stock India', limit=3)
+    if heads:
+        for title, pub, src in heads:
+            src_txt = f" [{src}]" if src else ""
+            lines.append(f"   • {title}{src_txt}")
+        flags = headline_risk_flags(heads)
+        if flags:
+            lines.append("   ⚠ Risk keyword(s) in headlines: "
+                         + ", ".join(flags).upper())
+            lines.append("     → Verify the story before entering; consider skipping.")
+    else:
+        lines.append("   (no headlines available right now)")
+    lines.append("")
+
     lines.append("Checklist:")
     lines.append("  1. Enter at/near open or on a dip toward entry zone.")
     lines.append("  2. Place the stop-loss immediately - it is your plan.")

@@ -1,7 +1,9 @@
 # =====================================================================
 # Daily Email Scanner - sends the pick of the day every trading morning
-# 03:50 UTC = 09:20 IST (IST is UTC+5:30)
-# Runs Mon-Fri only (NSE is closed on weekends)
+# 03:15 UTC = 08:45 IST (IST is UTC+5:30)
+# Runs BEFORE the market opens (9:15) so the plan is built only on the
+# previous day's FINAL settled data - no opening-spike contamination.
+# Runs Mon-Fri only (NSE is closed on weekends).
 # Credentials come from settings.json in this repo (private).
 # =====================================================================
 
@@ -9,7 +11,7 @@ name: Daily Email Scanner
 
 on:
   schedule:
-    - cron: '50 3 * * 1-5'   # 09:20 AM IST, Mon-Fri
+    - cron: '15 3 * * 1-5'   # 08:45 AM IST, Mon-Fri (before market open)
   workflow_dispatch:         # lets you click "Run workflow" to test manually
 
 concurrency:

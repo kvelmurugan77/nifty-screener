@@ -173,3 +173,6 @@ WATCHLIST = NIFTY50 + NEXT50 + EXTRA
 # Symbol used to read the broad market trend (NIFTY 50 index)
 MARKET_INDEX = "^NSEI"
 MARKET_INDEX_NAME = "NIFTY 50 Index"
+
+# India VIX - the market's "fear gauge" (calm <15, normal 15-20, nervous >20)
+MARKET_VIX = "^INDIAVIX"

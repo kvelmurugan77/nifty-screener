@@ -46,7 +46,8 @@ import pandas as pd
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from watchlist import WATCHLIST, MARKET_INDEX, MARKET_INDEX_NAME
+from watchlist import (WATCHLIST, MARKET_INDEX, MARKET_INDEX_NAME,
+                       MARKET_VIX)
 
 # ----------------------------------------------------------------------------
 # Configuration
@@ -389,6 +390,7 @@ def analyze(ticker, name, df, nifty_df):
             "vol_ratio_today": vol_ratio_today, "red_big": red_big,
             "drop_big": drop_big, "extended": extended,
             "recent_low": recent_low,
+            "gap_pct": gap_pct,
             "scores": sc, "total": total, "reasons": reasons,
             "date": str(df.index[-1].date()),
         }
@@ -396,10 +398,28 @@ def analyze(ticker, name, df, nifty_df):
         return None
 
 
-def market_regime(nifty_df):
+def vix_context(vix_df):
+    """India VIX level -> plain-language stress gauge."""
+    if vix_df is None or len(vix_df) == 0:
+        return {"vix": None, "vix_label": "n/a", "vix_note": ""}
+    v = float(vix_df["Close"].iloc[-1])
+    if v < 15:
+        label, note = "Calm", "VIX is low - markets complacent. Still keep stops."
+    elif v <= 20:
+        label, note = "Normal", "VIX in normal range - conditions fine but stay disciplined."
+    elif v <= 25:
+        label, note = "Elevated", "VIX elevated - expect bigger swings. Size down and tighten stops."
+    else:
+        label, note = "High fear", "VIX very high - markets stressed. Best to avoid fresh longs or stay in cash."
+    return {"vix": v, "vix_label": label, "vix_note": note}
+
+
+def market_regime(nifty_df, vix_df=None):
     if nifty_df is None or len(nifty_df) < 200:
-        return {"label": "Unknown", "color": "gray",
-                "note": "Not enough index data to judge the market."}
+        out = {"label": "Unknown", "color": "gray",
+               "note": "Not enough index data to judge the market."}
+        out.update(vix_context(vix_df))
+        return out
     c = nifty_df["Close"].astype(float)
     s50, s200 = sma(c, 50), sma(c, 200)
     last, r14 = c.iloc[-1], rsi(c).iloc[-1]
@@ -408,17 +428,21 @@ def market_regime(nifty_df):
     above50 = last > s50.iloc[-1]
     bullish = above200 and above50 and r14 >= 50
     bearish = (not above200) and r14 < 45
+    vix = vix_context(vix_df)
     if bullish:
-        return {"label": "Bullish", "color": "#16a34a",
-                "note": "Index above 50 & 200-day averages with positive RSI. Favour buying dips in strong names.",
-                "r14": r14, "r20": r20, "above200": True}
-    if bearish:
-        return {"label": "Bearish - caution", "color": "#dc2626",
-                "note": "Index below its 200-day average. Prefer staying in cash or very small, quick trades with tight stops.",
-                "r14": r14, "r20": r20, "above200": False}
-    return {"label": "Neutral / mixed", "color": "#d97706",
-            "note": "Index mixed vs its averages. Trade only the highest-scoring picks with strict stop-losses.",
-            "r14": r14, "r20": r20, "above200": above200}
+        out = {"label": "Bullish", "color": "#16a34a",
+               "note": "Index above 50 & 200-day averages with positive RSI. Favour buying dips in strong names.",
+               "r14": r14, "r20": r20, "above200": True}
+    elif bearish:
+        out = {"label": "Bearish - caution", "color": "#dc2626",
+               "note": "Index below its 200-day average. Prefer staying in cash or very small, quick trades with tight stops.",
+               "r14": r14, "r20": r20, "above200": False}
+    else:
+        out = {"label": "Neutral / mixed", "color": "#d97706",
+               "note": "Index mixed vs its averages. Trade only the highest-scoring picks with strict stop-losses.",
+               "r14": r14, "r20": r20, "above200": above200}
+    out.update(vix)
+    return out
 
 
 # ----------------------------------------------------------------------------
@@ -529,13 +553,17 @@ def build_html(cfg, meta, regime, picks, avoids, failed):
     r14_txt = f'{regime["r14"]:.0f}' if "r14" in regime else "-"
     r20_txt = f'{regime["r20"]:+.1f}%' if "r20" in regime else "-"
     above_txt = "Yes" if regime.get("above200") else "No"
+    vix_txt = f'{regime["vix"]:.1f}' if regime.get("vix") else "-"
+    vix_lbl = f'({regime["vix_label"]})' if regime.get("vix_label") else ""
+    vix_note = regime.get("vix_note", "")
     regime_html = f"""
     <div class="card">
       <div class="banner"><h2>Market regime — {html.escape(MARKET_INDEX_NAME)}</h2>{regime_chip}</div>
       <p style="margin-top:8px">{html.escape(regime["note"])}</p>
       <p class="note" style="margin-top:6px">NIFTY RSI(14): {r14_txt} &nbsp;·&nbsp;
       20-day change: {r20_txt} &nbsp;·&nbsp;
-      Above 200-DMA: {above_txt}</p>
+      Above 200-DMA: {above_txt} &nbsp;·&nbsp;
+      India VIX: {vix_txt} {vix_lbl} &nbsp;·&nbsp; {html.escape(vix_note)}</p>
     </div>"""
 
     # ---------------- pick of the day ----------------
@@ -548,6 +576,11 @@ def build_html(cfg, meta, regime, picks, avoids, failed):
         sl_pct = tp["sl_pct"] if tp else 0
         risk_line = f"Risk per trade: Rs {inr(cfg['risk_rs'])} ({cfg['risk_pct']}% of Rs {inr(cfg['capital'])})" if tp else ""
         whys = " · ".join(p["reasons"]) if p["reasons"] else "trend & setup"
+        chase_warn = ""
+        if p.get("gap_pct", 0) > 3 or p.get("chg_pct", 0) > 2.5:
+            chase_warn = ("<p class='note' style='color:#b45309'>⚠ " + html.escape(sub) +
+                          f" already moved +{max(p.get('gap_pct', 0), p.get('chg_pct', 0)):.1f}% at/after "
+                          "open — DO NOT chase. Wait for a dip toward the entry zone or skip today.</p>")
         pick_html = f"""
     <div class="card" style="border:2px solid {color};border-radius:16px">
       <div class="banner">
@@ -574,6 +607,7 @@ def build_html(cfg, meta, regime, picks, avoids, failed):
              {p['dist_52h']:+.1f}% from 52-week high, 5-day avg volume {p['vol_ratio_5_20']:.2f}× 20-day.</p>
           <p class="note">{html.escape(risk_line)} — never risk more than this.</p>
           {"<p class='note' style='color:#b45309'>⚠ This single position uses more than 40% of your capital. Beginners are safer splitting into 2–3 smaller positions.</p>" if tp and tp['notional_pct'] > 40 else ""}
+          {chase_warn}
         </div>
         <div>
           <p class="note" style="margin-bottom:4px">Last 30 sessions</p>
@@ -694,6 +728,8 @@ def print_console(meta, regime, picks, avoids, failed, cfg):
         print("\n⚠ MARKET IS OPEN — prices below are LIVE. Run after 3:30 PM for final levels.")
 
     print(f"\nMARKET REGIME [{regime['label']}]: {regime['note']}")
+    if regime.get("vix"):
+        print(f"  India VIX: {regime['vix']:.1f} ({regime.get('vix_label', '')}) — {regime.get('vix_note', '')}")
 
     if not picks:
         print("\n⚠ No stock passed the quality filters today. Best action: STAY IN CASH.")
@@ -714,6 +750,10 @@ def print_console(meta, regime, picks, avoids, failed, cfg):
     print(f"  Risk if SL hit  : ₹{inr(tp['risk_rs'])} = {cfg['risk_pct']}% of capital")
     if tp["notional_pct"] > 40:
         print("  ⚠ Note          : position uses >40% of capital — consider 2-3 smaller positions instead")
+    if p.get("gap_pct", 0) > 3 or p.get("chg_pct", 0) > 2.5:
+        print(f"  ⚠ CHASE GUARD    : {p['ticker'].replace('.NS','')} already moved "
+              f"+{max(p.get('gap_pct', 0), p.get('chg_pct', 0)):.1f}% — DO NOT chase. "
+              "Wait for a dip toward entry or skip.")
     print(f"  Why             : {(' · '.join(p['reasons']) if p['reasons'] else 'trend + setup')} | RSI {p['rsi']:.0f} | ATR {p['atr_pct']:.1f}%")
 
     print("\n" + "-" * 78)
@@ -758,7 +798,8 @@ def main():
         sys.exit("No data could be downloaded. Check your internet connection and try again.")
 
     nifty_df = data.get(MARKET_INDEX) or fetch_one(MARKET_INDEX)
-    regime = market_regime(nifty_df)
+    vix_df = data.get(MARKET_VIX) or fetch_one(MARKET_VIX)
+    regime = market_regime(nifty_df, vix_df)
 
     stats = []
     for ticker, name in (WATCHLIST if args.limit is None else WATCHLIST[:args.limit]):
@@ -823,6 +864,9 @@ def main():
                 sl["plan"] = s["plan"]
         with open(json_path, "w", encoding="utf-8") as fh:
             json.dump({"meta": meta, "regime": regime["label"],
+                       "regime_note": regime.get("note", ""),
+                       "vix": regime.get("vix"),
+                       "vix_label": regime.get("vix_label"),
                        "capital": args.capital, "risk_pct": args.risk, "picks": slim},
                       fh, indent=2, default=str)
         print(f"Report saved: {html_path}")
