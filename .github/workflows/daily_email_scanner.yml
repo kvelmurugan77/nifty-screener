@@ -1,0 +1,43 @@
+# =====================================================================
+# Daily Email Scanner - sends the pick of the day every morning
+# 03:50 UTC = 09:20 IST (IST is UTC+5:30)
+# =====================================================================
+
+name: Daily Email Scanner
+
+on:
+  schedule:
+    - cron: '50 3 * * *'   # 09:20 AM IST every day
+  workflow_dispatch:       # lets you click "Run workflow" to test manually
+
+concurrency:
+  group: daily-email-scanner
+  cancel-in-progress: true
+
+jobs:
+  scan-and-email:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GMAIL_USER: ${{ secrets.GMAIL_USER }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+      TO_EMAIL: ${{ secrets.TO_EMAIL }}
+      CAPITAL: ${{ secrets.CAPITAL }}
+      RISK_PCT: ${{ secrets.RISK_PCT }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run scanner and email pick of the day
+        run: python daily_email.py

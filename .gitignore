@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+
+# Scanner runtime files (regenerated every run)
+cache/
+reports/
+daily_email.log
+
+# Local settings with secrets - NEVER commit this
+settings.json
+.env
