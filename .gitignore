@@ -10,3 +10,5 @@ daily_email.log
 # Local settings with secrets - NEVER commit this
 settings.json
 .env
+.sent_marker
+backtest_signals.csv

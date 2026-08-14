@@ -168,9 +168,10 @@ def fetch_headlines(query, limit=3):
 
 
 def headline_risk_flags(headlines):
-    """Return list of risk keywords matched across headlines (lowercased)."""
+    """Return list of risk keywords matched as WHOLE WORDS across headlines."""
     text = " ".join(h[0].lower() for h in headlines)
-    return [k for k in RISK_KEYWORDS if k in text]
+    return [k for k in RISK_KEYWORDS
+            if re.search(r"\b" + re.escape(k) + r"\b", text)]
 
 
 # ----------------------------------------------------------------------------
@@ -270,6 +271,18 @@ def compose(data, capital, risk):
     if moved > 2.5:
         lines.append(f"   ⚠ CHASE GUARD  : {ticker} already moved +{moved:.1f}% today -")
         lines.append("      DO NOT chase. Wait for a dip toward the entry zone or skip.")
+    try:
+        from prob_model import success_probability
+        _pr = success_probability(score=p.get("total", 0), rsi=p.get("rsi", 50),
+                                  dist_52h=p.get("dist_52h", 0),
+                                  vol_ratio=p.get("vol_ratio_5_20", 1),
+                                  atr_pct=p.get("atr_pct", 2),
+                                  regime_bull=data.get("above50", False))
+        lines.append(f"   Success prob  : ~{_pr*100:.0f}% chance of hitting Target 1")
+        lines.append("      (historical estimate from 2-yr backtest of similar setups -")
+        lines.append("      NOT a guarantee. ~1 in 3 is the base rate.)")
+    except Exception:  # noqa: BLE001
+        pass
     why = " · ".join(p.get("reasons", [])) or "trend + setup"
     lines.append(f"   Why          : {why}")
     lines.append(f"   RSI {p.get('rsi', 0):.0f} | ATR {p.get('atr_pct', 0):.1f}% | "
@@ -382,6 +395,13 @@ def main():
             "(GitHub Secrets) or in settings.json.")
         return 1
 
+    # Sent-marker: if today's email was already sent (e.g. by an earlier
+    # scheduled run), skip so the fallback schedule never sends twice.
+    marker = os.path.join(HERE, ".sent_marker")
+    if os.path.exists(marker) and not args.dry_run:
+        log("sent-marker found — email already sent today; skipping.")
+        return 0
+
     data = run_scan(capital, risk)
     if data is None:
         subject = f"Daily Stock Scanner {ist_now().strftime('%Y-%m-%d')}: data unavailable"
@@ -394,7 +414,14 @@ def main():
     else:
         subject, body = compose(data, capital, risk)
 
-    send_email(gmail_user, app_pass, to_email, subject, body, dry_run=args.dry_run)
+    ok = send_email(gmail_user, app_pass, to_email, subject, body, dry_run=args.dry_run)
+    if ok and not args.dry_run:
+        try:
+            with open(marker, "w", encoding="utf-8") as fh:
+                fh.write(ist_now().strftime("%Y-%m-%d"))
+            log("sent-marker written")
+        except Exception:  # noqa: BLE001
+            pass
     return 0
 
 

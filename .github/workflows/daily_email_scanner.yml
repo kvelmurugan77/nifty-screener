@@ -1,9 +1,19 @@
 # =====================================================================
 # Daily Email Scanner - sends the pick of the day every trading morning
-# 03:15 UTC = 08:45 IST (IST is UTC+5:30)
-# Runs BEFORE the market opens (9:15) so the plan is built only on the
-# previous day's FINAL settled data - no opening-spike contamination.
-# Runs Mon-Fri only (NSE is closed on weekends).
+#
+# WHY TWO SCHEDULED TIMES?
+# GitHub Actions runs scheduled jobs on a "best-effort" basis and can
+# fire them LATE (we measured ~1h50m of delay on this repo). To arrive
+# on time we schedule EARLY and add a FALLBACK that never double-sends:
+#
+#   Primary : 01:40 UTC = 07:10 IST  (arrives ~08:30-09:00 IST after
+#             GitHub's typical delay, well before the 09:15 open)
+#   Fallback: 03:15 UTC = 08:45 IST  (only sends if the primary failed;
+#             a ".sent_marker" file cached per day prevents duplicates)
+#
+# Either way the plan is built on the previous day's FINAL settled data
+# (market is closed before 09:15), so no opening-spike contamination.
+# Runs Mon-Fri only (NSE closed on weekends).
 # Credentials come from settings.json in this repo (private).
 # =====================================================================
 
@@ -11,12 +21,13 @@ name: Daily Email Scanner
 
 on:
   schedule:
-    - cron: '15 3 * * 1-5'   # 08:45 AM IST, Mon-Fri (before market open)
-  workflow_dispatch:         # lets you click "Run workflow" to test manually
+    - cron: '40 1 * * 1-5'   # 07:10 IST (primary)
+    - cron: '15 3 * * 1-5'   # 08:45 IST (fallback, idempotent)
+  workflow_dispatch:         # manual test button
 
 concurrency:
   group: daily-email-scanner
-  cancel-in-progress: true
+  cancel-in-progress: false   # never cancel a run that may have already sent
 
 jobs:
   scan-and-email:
@@ -26,6 +37,16 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Compute date stamp (UTC)
+        id: stamp
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore sent-marker (prevents duplicate emails)
+        uses: actions/cache/restore@v4
+        with:
+          path: .sent_marker
+          key: sent-${{ steps.stamp.outputs.day }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -39,3 +60,11 @@ jobs:
 
       - name: Run scanner and email pick of the day
         run: python daily_email.py
+
+      - name: Save sent-marker
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .sent_marker
+          key: sent-${{ steps.stamp.outputs.day }}

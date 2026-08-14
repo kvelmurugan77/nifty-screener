@@ -49,6 +49,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from watchlist import (WATCHLIST, MARKET_INDEX, MARKET_INDEX_NAME,
                        MARKET_VIX)
 
+try:
+    from prob_model import success_probability
+except Exception:  # noqa: BLE001
+    success_probability = None
+
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
@@ -432,15 +437,15 @@ def market_regime(nifty_df, vix_df=None):
     if bullish:
         out = {"label": "Bullish", "color": "#16a34a",
                "note": "Index above 50 & 200-day averages with positive RSI. Favour buying dips in strong names.",
-               "r14": r14, "r20": r20, "above200": True}
+               "r14": r14, "r20": r20, "above200": True, "above50": above50}
     elif bearish:
         out = {"label": "Bearish - caution", "color": "#dc2626",
                "note": "Index below its 200-day average. Prefer staying in cash or very small, quick trades with tight stops.",
-               "r14": r14, "r20": r20, "above200": False}
+               "r14": r14, "r20": r20, "above200": False, "above50": above50}
     else:
         out = {"label": "Neutral / mixed", "color": "#d97706",
                "note": "Index mixed vs its averages. Trade only the highest-scoring picks with strict stop-losses.",
-               "r14": r14, "r20": r20, "above200": above200}
+               "r14": r14, "r20": r20, "above200": above200, "above50": above50}
     out.update(vix)
     return out
 
@@ -567,6 +572,15 @@ def build_html(cfg, meta, regime, picks, avoids, failed):
     </div>"""
 
     # ---------------- pick of the day ----------------
+    prob_chip = ""
+    if picks and success_probability is not None:
+        _pr = success_probability(picks[0]["total"], picks[0]["rsi"],
+                                  picks[0]["dist_52h"], picks[0]["vol_ratio_5_20"],
+                                  picks[0]["atr_pct"], regime.get("above50", False))
+        prob_chip = (f'<span class="chip" style="background:#475569" '
+                     f'title="Historical estimate from 2-yr backtest of similar setups">'
+                     f'T1 prob ~{_pr*100:.0f}%</span>')
+
     pick_html = ""
     if picks:
         p = picks[0]
@@ -589,6 +603,7 @@ def build_html(cfg, meta, regime, picks, avoids, failed):
           <div class="sub">{html.escape(sub)} · scanned {date_str} {meta['time']} IST</div>
         </div>
         <span class="chip" style="background:{color}">Score {p['total']:.0f}/100</span>
+        {prob_chip}
       </div>
       <div class="grid2" style="margin-top:12px">
         <div class="pick-box">
@@ -754,6 +769,12 @@ def print_console(meta, regime, picks, avoids, failed, cfg):
         print(f"  ⚠ CHASE GUARD    : {p['ticker'].replace('.NS','')} already moved "
               f"+{max(p.get('gap_pct', 0), p.get('chg_pct', 0)):.1f}% — DO NOT chase. "
               "Wait for a dip toward entry or skip.")
+    if success_probability is not None:
+        _pr = success_probability(p["total"], p["rsi"], p["dist_52h"],
+                                  p["vol_ratio_5_20"], p["atr_pct"],
+                                  regime.get("above50", False))
+        print(f"  Success prob    : ~{_pr*100:.0f}% chance of hitting Target 1 "
+              f"(historical estimate, 2-yr backtest)")
     print(f"  Why             : {(' · '.join(p['reasons']) if p['reasons'] else 'trend + setup')} | RSI {p['rsi']:.0f} | ATR {p['atr_pct']:.1f}%")
 
     print("\n" + "-" * 78)
@@ -867,6 +888,7 @@ def main():
                        "regime_note": regime.get("note", ""),
                        "vix": regime.get("vix"),
                        "vix_label": regime.get("vix_label"),
+                       "above50": regime.get("above50", False),
                        "capital": args.capital, "risk_pct": args.risk, "picks": slim},
                       fh, indent=2, default=str)
         print(f"Report saved: {html_path}")
