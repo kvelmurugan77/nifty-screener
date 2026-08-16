@@ -69,7 +69,7 @@ NEXT50 = [
     ("HAL.NS", "Hindustan Aeronautics"),
     ("AMBUJACEM.NS", "Ambuja Cements"),
     ("ACC.NS", "ACC"),
-    ("BHEL.NS", "BHEL"),
+    ("BHEL.NS", "Bharat Heavy Electricals"),
     ("BHARATFORG.NS", "Bharat Forge"),
     ("BOSCHLTD.NS", "Bosch"),
     ("CANBK.NS", "Canara Bank"),

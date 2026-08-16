@@ -546,7 +546,7 @@ def sparkline(closes, color):
             f'stroke-width="2" stroke-linejoin="round"/></svg>')
 
 
-def build_html(cfg, meta, regime, picks, avoids, failed):
+def build_html(cfg, meta, regime, picks, avoids, failed, filter_info=None):
     date_str = meta["date"]
     live_note = ""
     if meta["market_open"]:
@@ -573,13 +573,20 @@ def build_html(cfg, meta, regime, picks, avoids, failed):
 
     # ---------------- pick of the day ----------------
     prob_chip = ""
-    if picks and success_probability is not None:
-        _pr = success_probability(picks[0]["total"], picks[0]["rsi"],
-                                  picks[0]["dist_52h"], picks[0]["vol_ratio_5_20"],
-                                  picks[0]["atr_pct"], regime.get("above50", False))
+    if picks and picks[0].get("prob") is not None:
         prob_chip = (f'<span class="chip" style="background:#475569" '
                      f'title="Historical estimate from 2-yr backtest of similar setups">'
-                     f'T1 prob ~{_pr*100:.0f}%</span>')
+                     f'T1 prob ~{picks[0]["prob"]*100:.0f}%</span>')
+    filter_banner = ""
+    if filter_info and filter_info.get("enabled") and picks:
+        _pr = picks[0].get("prob", 0)
+        filter_banner = (f'<div style="background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d;'
+                         f'border-radius:8px;padding:8px 12px;font-size:13px;margin-top:10px">'
+                         f'✅ Passed improved filter: probability {_pr*100:.1f}% ≥ '
+                         f'{filter_info["min_prob"]:.0%} · RSI {picks[0]["rsi"]:.1f} in '
+                         f'{filter_info["rsi_min"]:.0f}–{filter_info["rsi_max"]:.0f} band · '
+                         f'<b>{filter_info["passed_count"]} of {filter_info["base_count"]}</b> '
+                         f'candidates passed today.</div>')
 
     pick_html = ""
     if picks:
@@ -605,6 +612,7 @@ def build_html(cfg, meta, regime, picks, avoids, failed):
         <span class="chip" style="background:{color}">Score {p['total']:.0f}/100</span>
         {prob_chip}
       </div>
+      {filter_banner}
       <div class="grid2" style="margin-top:12px">
         <div class="pick-box">
           <div class="big">₹{p['close']:,.2f}</div>
@@ -643,6 +651,7 @@ def build_html(cfg, meta, regime, picks, avoids, failed):
         <td>{p['atr_pct']:.1f}%</td>
         <td>₹{p['avg_value_cr']:,.0f} cr</td>
         <td>{p['dist_52h']:+.1f}%</td>
+        <td>{('~%.0f%%' % (p.get('prob',0)*100)) if p.get('prob') is not None else '-'}</td>
         <td><b>{p['total']:.0f}</b></td>
         <td class="l" style="white-space:normal;min-width:190px">
           ₹{tp.get('entry', p['close']):,.2f} / ₹{tp.get('sl',0):,.2f} / ₹{tp.get('t1',0):,.2f} / ₹{tp.get('t2',0):,.2f}</td>
@@ -654,7 +663,7 @@ def build_html(cfg, meta, regime, picks, avoids, failed):
       <div style="overflow-x:auto">
       <table>
         <thead><tr class="l"><th>#</th><th class="l">Stock</th><th>LTP</th><th>Day%</th><th>RSI</th>
-        <th>ATR%</th><th>Avg Val</th><th>vs 52wH</th><th>Score</th><th class="l">Entry / SL / T1 / T2</th></tr></thead>
+        <th>ATR%</th><th>Avg Val</th><th>vs 52wH</th><th>Prob</th><th>Score</th><th class="l">Entry / SL / T1 / T2</th></tr></thead>
         <tbody>{rows}</tbody>
       </table>
       </div>
@@ -733,7 +742,7 @@ def build_html(cfg, meta, regime, picks, avoids, failed):
 # ----------------------------------------------------------------------------
 # Console output
 # ----------------------------------------------------------------------------
-def print_console(meta, regime, picks, avoids, failed, cfg):
+def print_console(meta, regime, picks, avoids, failed, cfg, filter_info=None):
     print("\n" + "=" * 78)
     print(f"  INDIAN DAILY STOCK SCANNER — {meta['date']} {meta['time']} IST")
     print(f"  Capital ₹{inr(cfg['capital'])} · Risk {cfg['risk_pct']}% per trade · Holding 1–7 days")
@@ -748,6 +757,10 @@ def print_console(meta, regime, picks, avoids, failed, cfg):
 
     if not picks:
         print("\n⚠ No stock passed the quality filters today. Best action: STAY IN CASH.")
+        if filter_info and filter_info.get("enabled"):
+            print(f"   (Improved filter: {filter_info['base_count']} candidates were "
+                  f"checked, {filter_info['passed_count']} passed prob≥{filter_info['min_prob']:.0%} "
+                  f"& RSI {filter_info['rsi_min']:.0f}-{filter_info['rsi_max']:.0f}.)")
         print("   That is a valid trade decision — preserving capital is priority #1.")
         return
 
@@ -756,6 +769,10 @@ def print_console(meta, regime, picks, avoids, failed, cfg):
     print("\n" + "-" * 78)
     print(f"  🏆 PICK OF THE DAY : {p['ticker'].replace('.NS','')}  ({p['name']})   Score {p['total']:.0f}/100")
     print("-" * 78)
+    if filter_info and filter_info.get("enabled"):
+        print(f"  ✅ Improved filter: prob {p.get('prob', 0)*100:.1f}% ≥ {filter_info['min_prob']:.0%} · "
+              f"RSI {p['rsi']:.1f} in {filter_info['rsi_min']:.0f}-{filter_info['rsi_max']:.0f} band "
+              f"({filter_info['passed_count']}/{filter_info['base_count']} candidates passed)")
     print(f"  Last close      : ₹{p['close']:,.2f}  ({p['chg_pct']:+.2f}% today)")
     print(f"  Entry zone      : ₹{tp['entry']:,.2f}")
     print(f"  Stop-loss       : ₹{tp['sl']:,.2f}  (-{tp['sl_pct']:.1f}%)")
@@ -769,11 +786,8 @@ def print_console(meta, regime, picks, avoids, failed, cfg):
         print(f"  ⚠ CHASE GUARD    : {p['ticker'].replace('.NS','')} already moved "
               f"+{max(p.get('gap_pct', 0), p.get('chg_pct', 0)):.1f}% — DO NOT chase. "
               "Wait for a dip toward entry or skip.")
-    if success_probability is not None:
-        _pr = success_probability(p["total"], p["rsi"], p["dist_52h"],
-                                  p["vol_ratio_5_20"], p["atr_pct"],
-                                  regime.get("above50", False))
-        print(f"  Success prob    : ~{_pr*100:.0f}% chance of hitting Target 1 "
+    if p.get("prob") is not None:
+        print(f"  Success prob    : ~{p['prob']*100:.0f}% chance of hitting Target 1 "
               f"(historical estimate, 2-yr backtest)")
     print(f"  Why             : {(' · '.join(p['reasons']) if p['reasons'] else 'trend + setup')} | RSI {p['rsi']:.0f} | ATR {p['atr_pct']:.1f}%")
 
@@ -807,6 +821,10 @@ def main():
     ap.add_argument("--refresh", action="store_true", help="re-download data (ignore cache)")
     ap.add_argument("--limit", type=int, default=None, help="scan only first N symbols (testing)")
     ap.add_argument("--no-html", action="store_true", help="skip HTML report generation")
+    ap.add_argument("--min-prob", type=float, default=0.28,
+                    help="minimum success probability (0-1) for a pick to qualify (default 0.28)")
+    ap.add_argument("--rsi-min", type=float, default=50.0, help="RSI lower bound of the sweet-spot band")
+    ap.add_argument("--rsi-max", type=float, default=65.0, help="RSI upper bound of the sweet-spot band")
     args = ap.parse_args()
 
     if args.risk <= 0 or args.risk > 5:
@@ -833,11 +851,30 @@ def main():
             st["plan"] = trade_plan(st, args.capital, args.risk)
             if st["plan"] is None:
                 continue
+            if success_probability is not None:
+                st["prob"] = success_probability(
+                    st["total"], st["rsi"], st["dist_52h"],
+                    st["vol_ratio_5_20"], st["atr_pct"],
+                    regime.get("above50", False))
+            else:
+                st["prob"] = None
             stats.append(st)
 
     stats.sort(key=lambda s: s["total"], reverse=True)
-    picks = [s for s in stats if s["total"] >= 40 and not (s["red_big"] or s["drop_big"])]
+    base_picks = [s for s in stats if s["total"] >= 40 and not (s["red_big"] or s["drop_big"])]
+    # --- IMPROVED FILTER: probability + RSI sweet spot (measured on 2-yr backtest) ---
+    if success_probability is not None:
+        picks = [s for s in base_picks
+                 if s.get("prob", 0) >= args.min_prob
+                 and args.rsi_min <= s["rsi"] <= args.rsi_max]
+    else:
+        picks = base_picks
     picks = picks[:10]
+    filter_info = {
+        "enabled": success_probability is not None,
+        "min_prob": args.min_prob, "rsi_min": args.rsi_min, "rsi_max": args.rsi_max,
+        "base_count": len(base_picks), "passed_count": len(picks),
+    }
     pick_tickers = {p["ticker"] for p in picks}
     avoid_candidates = [
         s for s in stats
@@ -865,13 +902,13 @@ def main():
     }
     cfg = {"capital": args.capital, "risk_pct": args.risk, "risk_rs": args.capital * args.risk / 100}
 
-    print_console(meta, regime, picks, avoids, failed, cfg)
+    print_console(meta, regime, picks, avoids, failed, cfg, filter_info)
 
     if not args.no_html:
         os.makedirs(REPORT_DIR, exist_ok=True)
         html_path = os.path.join(REPORT_DIR, f"picks_{meta['date']}.html")
         with open(html_path, "w", encoding="utf-8") as fh:
-            fh.write(build_html(cfg, meta, regime, picks, avoids, failed))
+            fh.write(build_html(cfg, meta, regime, picks, avoids, failed, filter_info))
         json_path = os.path.join(REPORT_DIR, f"picks_{meta['date']}.json")
         slim = []
         for s in picks:
@@ -884,7 +921,7 @@ def main():
             if s.get("plan"):
                 sl["plan"] = s["plan"]
         with open(json_path, "w", encoding="utf-8") as fh:
-            json.dump({"meta": meta, "regime": regime["label"],
+            json.dump({"meta": meta, "filter": filter_info, "regime": regime["label"],
                        "regime_note": regime.get("note", ""),
                        "vix": regime.get("vix"),
                        "vix_label": regime.get("vix_label"),
