@@ -206,19 +206,24 @@ Only liquid names pass the gate first: **20-day average traded value ≥ ₹10 c
 ### Improved pick filter (on by default)
 
 On top of the base gates, the pick of the day must also pass a **success-probability
-filter** (default ≥ 28%) and an **RSI sweet-spot band** (default 50–65). This is the
-measured improvement from a 2-year backtest of this exact strategy:
+filter** (default ≥ 28%), an **RSI sweet-spot band** (default 50–65), and a **weekly RSI
+trend filter** (weekly RSI-14 ≥ 50, measured to add a small real gain). These are the
+measured improvements from a 2-year backtest of this exact strategy:
 
 | | Baseline | Improved |
 |---|---|---|
-| Win rate (hit T1) | 34.2% | **37.9%** |
-| Avg per trade | +0.154R | **+0.210R** |
-| Profit factor | 1.35 | **1.47** |
-| Net @ ₹5L, 1.5% risk | ~₹66,500/yr | **~₹97,000/yr** |
+| Win rate (hit T1) | 34.2% | **~38.6%** |
+| Avg per trade | +0.154R | **~+0.229R** |
+| Profit factor | 1.35 | **~1.52** |
 
-It trades less often (~198 vs 237 signals/2y) but each trade is better. When nothing
+It trades less often (~189 vs 237 signals/2y) but each trade is better. When nothing
 passes, the tool says **"stay in cash"** — that's the filter working, not a bug.
-Tune it with `--min-prob 0.30`, `--rsi-min 45`, `--rsi-max 70` if you want.
+Tune it with `--min-prob 0.30`, `--rsi-min 45`, `--rsi-max 70`, `--weekly-rsi-min 45`,
+or disable the weekly filter with `--no-weekly-filter`.
+
+> Honesty note: other filters were tested and **not** added because they HURT results
+> (e.g. "daily close above 200-DMA" dropped avg/trade to +0.162R) — the gains here are
+> real but modest; ~38% is roughly the ceiling for a daily momentum pick.
 
 ## How to trade the pick (the 30-second checklist)
 

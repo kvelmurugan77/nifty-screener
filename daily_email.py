@@ -281,6 +281,15 @@ def compose(data, capital, risk):
         lines.append(f"   Success prob  : ~{_pr*100:.0f}% chance of hitting Target 1")
         lines.append("      (historical estimate from 2-yr backtest of similar setups -")
         lines.append("      NOT a guarantee. ~1 in 3 is the base rate.)")
+        _f = data.get("filter") or {}
+        if _f.get("enabled"):
+            wk_txt = ""
+            if _f.get("weekly_enabled"):
+                wk_txt = (f" · weekly RSI {p.get('weekly_rsi', 0):.1f} ≥ "
+                          f"{_f.get('weekly_min', 50):.0f}")
+            lines.append(f"   ✅ Filter pass  : prob {_pr*100:.1f}% ≥ {_f.get('min_prob',0.28)*100:.0f}%"
+                         f" & RSI {p.get('rsi',0):.1f} in {_f.get('rsi_min',50):.0f}-{_f.get('rsi_max',65):.0f}"
+                         f"{wk_txt} | {_f.get('passed_count','?')} of {_f.get('base_count','?')} candidates passed")
     except Exception:  # noqa: BLE001
         pass
     why = " · ".join(p.get("reasons", [])) or "trend + setup"
@@ -312,6 +321,9 @@ def compose(data, capital, risk):
 
     lines.append("Checklist:")
     lines.append("  1. Enter at/near open or on a dip toward entry zone.")
+    lines.append("     💡 Entry tip: on ~41% of days the open is LOWER than")
+    lines.append("     yesterday's close - a limit order ~0.3-0.5% below the")
+    lines.append("     entry zone improves your average ~0.15R. Never chase a +3% gap.")
     lines.append("  2. Place the stop-loss immediately - it is your plan.")
     lines.append("  3. Book half at Target 1, trail the rest to Target 2.")
     lines.append("  4. Holding window: 1 day to ~1 week. No progress in")
