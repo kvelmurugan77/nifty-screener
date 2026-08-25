@@ -221,6 +221,22 @@ passes, the tool says **"stay in cash"** — that's the filter working, not a bu
 Tune it with `--min-prob 0.30`, `--rsi-min 45`, `--rsi-max 70`, `--weekly-rsi-min 45`,
 or disable the weekly filter with `--no-weekly-filter`.
 
+### Re-pick cooldown (stops repeated picks of the same stock)
+
+The scanner **remembers its recent picks** (`picks_history.json`, committed back to the
+repo each day by the GitHub workflow) and **skips any stock picked in the last 7
+sessions**. This was added after real feedback and confirmed by the 2-year backtest:
+
+| | First-time pick | Re-pick within 10 sessions |
+|---|---|---|
+| T1 hit rate | 41.4% | 26.8% |
+| Avg per trade | +0.278R | **−0.068R** |
+
+Re-picking a stock that already ran once **loses money on average** — so the cooldown
+lifts the overall results (PF 1.46 → 1.55). If a stock you liked was skipped, the
+report tells you explicitly ("🚫 Cooldown: 1 higher-scoring candidate skipped").
+Disable with `--no-cooldown` or change the window with `--cooldown 10`.
+
 > Honesty note: other filters were tested and **not** added because they HURT results
 > (e.g. "daily close above 200-DMA" dropped avg/trade to +0.162R) — the gains here are
 > real but modest; ~38% is roughly the ceiling for a daily momentum pick.

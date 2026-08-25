@@ -290,6 +290,10 @@ def compose(data, capital, risk):
             lines.append(f"   ✅ Filter pass  : prob {_pr*100:.1f}% ≥ {_f.get('min_prob',0.28)*100:.0f}%"
                          f" & RSI {p.get('rsi',0):.1f} in {_f.get('rsi_min',50):.0f}-{_f.get('rsi_max',65):.0f}"
                          f"{wk_txt} | {_f.get('passed_count','?')} of {_f.get('base_count','?')} candidates passed")
+            if _f.get("cooldown_skipped"):
+                lines.append(f"   🚫 Cooldown     : {_f['cooldown_skipped']} higher-scoring candidate(s) "
+                             f"skipped — picked in the last {_f.get('cooldown',7)} sessions "
+                             f"(re-picks lose money on average, so we wait).")
     except Exception:  # noqa: BLE001
         pass
     why = " · ".join(p.get("reasons", [])) or "trend + setup"

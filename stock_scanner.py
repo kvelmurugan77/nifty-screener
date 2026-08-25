@@ -63,6 +63,36 @@ REPORT_DIR = os.path.join(HERE, "reports")
 CACHE_DIR = os.path.join(HERE, "cache")
 CACHE_EXT = ".pkl"
 
+# --- Pick history (cooldown memory) ------------------------------------
+# Persisted across runs so the scanner does not re-pick a stock it picked
+# recently. On GitHub Actions the workflow commits this file back to the
+# repo each day; locally it just lives next to the script.
+HISTORY_FILE = os.path.join(HERE, "picks_history.json")
+DEFAULT_COOLDOWN = 7          # sessions a stock is 'on cooldown' after being picked
+HISTORY_KEEP = 90             # max entries kept in the history file
+
+
+def load_pick_history():
+    """Return list of {'date','ticker'} most-recent-first, or []."""
+    try:
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, encoding="utf-8") as fh:
+                h = json.load(fh)
+            if isinstance(h, list):
+                return [e for e in h if isinstance(e, dict) and e.get("ticker")]
+    except Exception:  # noqa: BLE001
+        pass
+    return []
+
+
+def save_pick_history(entries):
+    """Save pick history (chronological, oldest first)."""
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as fh:
+            json.dump(entries[-HISTORY_KEEP:], fh, indent=1)
+    except Exception:  # noqa: BLE001
+        pass
+
 DEFAULT_CAPITAL = 1_00_000          # Rs - change with --capital
 DEFAULT_RISK_PCT = 1.5              # % of capital risked per trade
 MAX_RSI_PENALTY = 78.0              # RSI above this = overbought / chase risk
@@ -599,7 +629,12 @@ def build_html(cfg, meta, regime, picks, avoids, failed, filter_info=None):
                          f'{filter_info["min_prob"]:.0%} · RSI {picks[0]["rsi"]:.1f} in '
                          f'{filter_info["rsi_min"]:.0f}–{filter_info["rsi_max"]:.0f} band{wk_txt} · '
                          f'<b>{filter_info["passed_count"]} of {filter_info["base_count"]}</b> '
-                         f'candidates passed today.</div>')
+                         f'candidates passed today.'
+                         + (f'<br>🚫 Cooldown: <b>{filter_info["cooldown_skipped"]}</b> higher-scoring '
+                            f'candidate(s) skipped — picked in the last '
+                            f'{filter_info["cooldown"]} sessions (re-picks lose money on average).'
+                            if filter_info.get("cooldown_skipped") else "")
+                         + '</div>')
 
     pick_html = ""
     if picks:
@@ -788,6 +823,9 @@ def print_console(meta, regime, picks, avoids, failed, cfg, filter_info=None):
               + (f" · weekly RSI {p.get('weekly_rsi', 0):.1f} ≥ {filter_info['weekly_min']:.0f}"
                  if filter_info.get('weekly_enabled') else "") + f" · "
               f"({filter_info['passed_count']}/{filter_info['base_count']} candidates passed)")
+        if filter_info.get("cooldown_skipped"):
+            print(f"  🚫 Cooldown      : {filter_info['cooldown_skipped']} higher-scoring candidate(s) "
+                  f"skipped (picked in the last {filter_info['cooldown']} sessions)")
     print(f"  Last close      : ₹{p['close']:,.2f}  ({p['chg_pct']:+.2f}% today)")
     print(f"  Entry zone      : ₹{tp['entry']:,.2f}")
     print(f"  Stop-loss       : ₹{tp['sl']:,.2f}  (-{tp['sl_pct']:.1f}%)")
@@ -844,6 +882,11 @@ def main():
                     help="min weekly RSI(14) trend filter (default 50; measured gain)")
     ap.add_argument("--no-weekly-filter", action="store_true",
                     help="disable the weekly RSI trend filter")
+    ap.add_argument("--cooldown", type=int, default=DEFAULT_COOLDOWN,
+                    help="sessions a stock is skipped after being picked (default 7; measured: "
+                         "re-picks <=10d avg -0.068R vs first-time +0.278R)")
+    ap.add_argument("--no-cooldown", action="store_true",
+                    help="disable the re-pick cooldown (not recommended)")
     args = ap.parse_args()
 
     if args.risk <= 0 or args.risk > 5:
@@ -894,12 +937,35 @@ def main():
                       or s.get("weekly_rsi", 0) >= args.weekly_rsi_min)]
     else:
         picks = base_picks
+
+    # --- COOLDOWN: don't re-pick a stock picked recently (measured big win:
+    # re-picks <=10 sessions avg -0.068R vs first-time +0.278R; cooldown 7
+    # lifts PF 1.46 -> 1.55) ---
+    use_cooldown = not args.no_cooldown and args.cooldown > 0
+    history = load_pick_history() if use_cooldown else []
+    recent_tickers = {}  # ticker -> last pick date (most recent entries first)
+    for e in history[:args.cooldown if args.cooldown > 0 else 0]:
+        t = e.get("ticker")
+        if t and t not in recent_tickers:
+            recent_tickers[t] = e.get("date", "")
+    cooldown_skipped = 0
+    if use_cooldown and recent_tickers:
+        kept = []
+        for s in picks:
+            if s["ticker"] in recent_tickers:
+                cooldown_skipped += 1
+                continue
+            kept.append(s)
+        picks = kept
     picks = picks[:10]
     filter_info = {
         "enabled": success_probability is not None,
         "min_prob": args.min_prob, "rsi_min": args.rsi_min, "rsi_max": args.rsi_max,
         "weekly_enabled": use_weekly,
         "weekly_min": args.weekly_rsi_min,
+        "cooldown_enabled": use_cooldown,
+        "cooldown": args.cooldown if use_cooldown else 0,
+        "cooldown_skipped": cooldown_skipped,
         "base_count": len(base_picks), "passed_count": len(picks),
     }
     pick_tickers = {p["ticker"] for p in picks}
@@ -928,6 +994,14 @@ def main():
         "scanned": scanned,
     }
     cfg = {"capital": args.capital, "risk_pct": args.risk, "risk_rs": args.capital * args.risk / 100}
+
+    # record today's pick in the cooldown history (always, even with --no-html)
+    if use_cooldown and picks:
+        _history = load_pick_history()
+        _today_str = meta["date"]
+        if not (_history and _history[-1].get("date") == _today_str):
+            _history.append({"date": _today_str, "ticker": picks[0]["ticker"]})
+            save_pick_history(_history)
 
     print_console(meta, regime, picks, avoids, failed, cfg, filter_info)
 
