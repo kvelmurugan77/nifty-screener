@@ -1,7 +1,26 @@
 [
- {"date":"2026-08-12","ticker":"GRASIM.NS"},
- {"date":"2026-08-13","ticker":"HAL.NS"},
- {"date":"2026-08-14","ticker":"AARTIIND.NS"},
- {"date":"2026-08-17","ticker":"BHEL.NS"},
- {"date":"2026-08-18","ticker":"GRASIM.NS"}
+ {
+  "date": "2026-08-12",
+  "ticker": "GRASIM.NS"
+ },
+ {
+  "date": "2026-08-13",
+  "ticker": "HAL.NS"
+ },
+ {
+  "date": "2026-08-14",
+  "ticker": "AARTIIND.NS"
+ },
+ {
+  "date": "2026-08-17",
+  "ticker": "BHEL.NS"
+ },
+ {
+  "date": "2026-08-18",
+  "ticker": "GRASIM.NS"
+ },
+ {
+  "date": "2026-08-26",
+  "ticker": "JSWSTEEL.NS"
+ }
 ]
