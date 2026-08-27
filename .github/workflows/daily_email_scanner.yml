@@ -1,15 +1,21 @@
 # =====================================================================
 # Daily Email Scanner - sends the pick of the day every trading morning
 #
-# WHY TWO SCHEDULED TIMES?
+# WHY MULTIPLE SCHEDULED TIMES?
 # GitHub Actions runs scheduled jobs on a "best-effort" basis and can
-# fire them LATE (we measured ~1h50m of delay on this repo). To arrive
-# on time we schedule EARLY and add a FALLBACK that never double-sends:
+# fire them LATE (measured ~1h50m delay on this repo; on 27-Aug-2026 the
+# whole scheduler backlog cleared only at ~17:30 IST, and both triggers
+# were coalesced into that single late run). To arrive on time we
+# schedule EARLY, add several FALLBACKS, and a ".sent_marker" file
+# (cached per day) makes the job idempotent - whichever trigger fires
+# first sends the email, all later triggers no-op in ~20 seconds:
 #
-#   Primary : 01:40 UTC = 07:10 IST  (arrives ~08:30-09:00 IST after
-#             GitHub's typical delay, well before the 09:15 open)
-#   Fallback: 03:15 UTC = 08:45 IST  (only sends if the primary failed;
-#             a ".sent_marker" file cached per day prevents duplicates)
+#   01:40 UTC = 07:10 IST  (primary - usually fires ~08:15 IST)
+#   02:00 UTC = 07:30 IST  (watchdog 1)
+#   03:15 UTC = 08:45 IST  (fallback - documented 8:45 AM trigger)
+#   03:30 UTC = 09:00 IST  (watchdog 2 - last one to beat the 09:15 open)
+#   04:15 UTC = 09:45 IST  (watchdog 3 - market open; email carries the
+#   04:45 UTC = 10:15 IST   live-data warning banner, levels still usable)
 #
 # Either way the plan is built on the previous day's FINAL settled data
 # (market is closed before 09:15), so no opening-spike contamination.
@@ -22,8 +28,12 @@ name: Daily Email Scanner
 on:
   schedule:
     - cron: '40 1 * * 1-5'   # 07:10 IST (primary)
+    - cron: '0 2 * * 1-5'    # 07:30 IST (watchdog 1)
     - cron: '15 3 * * 1-5'   # 08:45 IST (fallback, idempotent)
-  workflow_dispatch:         # manual test button
+    - cron: '30 3 * * 1-5'   # 09:00 IST (watchdog 2 - last pre-open)
+    - cron: '15 4 * * 1-5'   # 09:45 IST (watchdog 3 - after open)
+    - cron: '45 4 * * 1-5'   # 10:15 IST (watchdog 4 - last chance)
+  workflow_dispatch:         # manual test button (also used by external cron)
 
 concurrency:
   group: daily-email-scanner
@@ -50,21 +60,34 @@ jobs:
           path: .sent_marker
           key: sent-${{ steps.stamp.outputs.day }}
 
+      - name: Early exit if email already sent today
+        id: earlyskip
+        run: |
+          if [ -f .sent_marker ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "sent-marker found — a previous trigger already sent today; skipping"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Python
+        if: steps.earlyskip.outputs.skip == 'false'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install dependencies
+        if: steps.earlyskip.outputs.skip == 'false'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run scanner and email pick of the day
+        if: steps.earlyskip.outputs.skip == 'false'
         run: python daily_email.py
 
       - name: Commit pick history (cooldown memory)
-        if: always()
+        if: steps.earlyskip.outputs.skip == 'false' && always()
         continue-on-error: true
         run: |
           git config user.name "github-actions[bot]"
@@ -79,7 +102,7 @@ jobs:
           fi
 
       - name: Save sent-marker
-        if: always()
+        if: steps.earlyskip.outputs.skip == 'false' && always()
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
