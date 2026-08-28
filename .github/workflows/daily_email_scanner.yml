@@ -45,6 +45,12 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write    # so we can commit picks_history.json back (cooldown memory)
+    env:
+      # Gmail credentials from GitHub Secrets (safer than the public settings.json;
+      # daily_email.py falls back to settings.json if a secret is not set yet)
+      GMAIL_USER: ${{ secrets.GMAIL_USER }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+      TO_EMAIL: ${{ secrets.TO_EMAIL }}
 
     steps:
       - name: Checkout code
