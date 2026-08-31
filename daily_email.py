@@ -419,19 +419,22 @@ def main():
         return 0
 
     data = run_scan(capital, risk)
-    if data is None:
+    data_ok = data is not None
+    if not data_ok:
         subject = f"Daily Stock Scanner {ist_now().strftime('%Y-%m-%d')}: data unavailable"
         body = ("The scanner could not download data this morning (often a temporary "
                 "Yahoo/network issue). No pick today.\n\n"
-                "Check the GitHub Actions log, then re-run: Actions tab -> "
-                "Daily Stock Scanner -> Run workflow.\n\n"
+                "This is a RETRY run — the next scheduled trigger will try again "
+                "automatically in ~30 minutes. Check the GitHub Actions log for details.\n\n"
                 "Educational tool, not investment advice.")
-        log("no data — sending failure notice")
+        log("no data — sending failure notice (will retry on next trigger)")
     else:
         subject, body = compose(data, capital, risk)
 
     ok = send_email(gmail_user, app_pass, to_email, subject, body, dry_run=args.dry_run)
-    if ok and not args.dry_run:
+    # Write the sent-marker ONLY when we actually had data. If data was
+    # unavailable, DON'T mark the day sent, so the next trigger retries.
+    if ok and not args.dry_run and data_ok:
         try:
             with open(marker, "w", encoding="utf-8") as fh:
                 fh.write(ist_now().strftime("%Y-%m-%d"))
