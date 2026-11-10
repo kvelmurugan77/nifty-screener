@@ -1,43 +1,52 @@
 # =====================================================================
 # Daily Email Scanner - sends the pick of the day every trading morning
 #
-# WHY MULTIPLE SCHEDULED TIMES?
-# GitHub Actions runs scheduled jobs on a "best-effort" basis and can
-# fire them LATE (measured ~1h50m delay on this repo; on 27-Aug-2026 the
-# whole scheduler backlog cleared only at ~17:30 IST, and both triggers
-# were coalesced into that single late run). To arrive on time we
-# schedule EARLY, add several FALLBACKS, and a ".sent_marker" file
-# (cached per day) makes the job idempotent - whichever trigger fires
-# first sends the email, all later triggers no-op in ~20 seconds:
+# TARGET: email in the inbox by ~08:30 IST, Mon-Fri, before the 09:15 open.
 #
-#   00:30-05:00 UTC every 30 min = 06:00-10:30 IST (10 chances)
-#   02:00 UTC = 07:30 IST  (watchdog 1)
-#   03:15 UTC = 08:45 IST  (fallback - documented 8:45 AM trigger)
-#   03:30 UTC = 09:00 IST  (watchdog 2 - last one to beat the 09:15 open)
-#   04:15 UTC = 09:45 IST  (watchdog 3 - market open; email carries the
-#   04:45 UTC = 10:15 IST   live-data warning banner, levels still usable)
+# HOW DELIVERY WORKS (and why it kept arriving at 12:30 IST)
+# GitHub Actions cron is "best effort": runs are queued and can be delayed by
+# tens of minutes to hours, worst at the top of the hour. This repo was firing
+# a 08:30 IST trigger and the email landed at 12:39 IST on 2026-11-03.
 #
-# Either way the plan is built on the previous day's FINAL settled data
-# (market is closed before 09:15), so no opening-spike contamination.
-# Runs Mon-Fri only (NSE closed on weekends).
-# Credentials come from settings.json in this repo (private).
+# Therefore two independent paths:
+#   1. EXTERNAL TRIGGER (reliable, primary): Google Apps Script posts to
+#      workflow_dispatch at 08:20 IST Mon-Fri. See apps_script_trigger.gs.
+#      This was working until 2026-10-02 and then silently stopped - almost
+#      certainly because the GitHub token inside the script was revoked.
+#   2. IN-REPO CRON (fallback): five off-peak triggers from 08:17 to 10:17 IST.
+#      The .sent_marker cache (actions/cache, keyed by UTC date) makes the job
+#      idempotent - the first trigger that fires sends, the rest no-op in ~20s.
+#
+# The plan is always built on the previous session's settled data (the market
+# is closed before 09:15), so a late run is not dangerous, just useless for an
+# opening-bell trade. Tune the fallbacks if your inbox time matters more than
+# the exact data cut.
+#
+# Credentials come from repository secrets (GMAIL_USER / GMAIL_APP_PASSWORD /
+# TO_EMAIL) with settings.json as a fallback.
 # =====================================================================
 
 name: Daily Email Scanner
 
 on:
   schedule:
-    - cron: '30 0 * * 1-5'   # 06:00 IST
-    - cron: '0 1 * * 1-5'    # 06:30 IST
-    - cron: '30 1 * * 1-5'   # 07:00 IST
-    - cron: '0 2 * * 1-5'    # 07:30 IST
-    - cron: '30 2 * * 1-5'   # 08:00 IST
-    - cron: '0 3 * * 1-5'    # 08:30 IST
-    - cron: '30 3 * * 1-5'   # 09:00 IST (last pre-open)
-    - cron: '0 4 * * 1-5'    # 09:30 IST (after open - live-data warning)
-    - cron: '30 4 * * 1-5'   # 10:00 IST (after open)
-    - cron: '0 5 * * 1-5'    # 10:30 IST (last chance)
-  workflow_dispatch:         # manual test button (also used by external cron)
+    # GitHub's scheduler fires scheduled jobs LATE and the delay is worst on
+    # the hour / half hour, when everyone else's cron is queued (measured on
+    # this repo: a 08:30 IST trigger sent the email at 12:39 IST). So:
+    #   * every trigger sits on an off-peak minute (07/13/17/43/47),
+    #   * the first one is deliberately EARLY (08:17 IST) so a normal
+    #     10-20 minute delay lands right around the 08:30 target,
+    #   * the rest are fallbacks, and the .sent_marker cache makes whichever
+    #     one fires first the only one that sends.
+    # The real fix for on-time delivery is the EXTERNAL trigger
+    # (Google Apps Script / cron-job.org) hitting workflow_dispatch at
+    # 08:20 IST Mon-Fri - see apps_script_trigger.gs.
+    - cron: '47 2 * * 1-5'   # 08:17 IST  <- primary
+    - cron: '13 3 * * 1-5'   # 08:43 IST  <- fallback 1
+    - cron: '43 3 * * 1-5'   # 09:13 IST  <- fallback 2 (2 min before open)
+    - cron: '17 4 * * 1-5'   # 09:47 IST  <- late fallback (live-data banner)
+    - cron: '47 4 * * 1-5'   # 10:17 IST  <- last chance
+  workflow_dispatch:         # manual test button + the external 08:20 IST trigger
 
 concurrency:
   group: daily-email-scanner
@@ -60,9 +69,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Compute date stamp (UTC)
+      - name: Compute date stamp (UTC) + log IST clock time
         id: stamp
-        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+          echo "IST now: $(TZ=Asia/Kolkata date '+%F %H:%M:%S')  (event: ${{ github.event_name }})"
 
       - name: Restore sent-marker (prevents duplicate emails)
         uses: actions/cache/restore@v4
