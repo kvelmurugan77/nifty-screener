@@ -205,7 +205,7 @@ def compose(data, capital, risk):
     # NSE holiday / market-closed check: if the data's last session is not
     # today, today is a holiday (or weekend) - don't send a confusing "pick".
     today = ist_now().date().isoformat()
-    if date != today:
+    if meta.get("market_closed") or date != today:
         lines = []
         lines.append("==============================================")
         lines.append("  INDIAN DAILY STOCK SCANNER")
@@ -260,8 +260,19 @@ def compose(data, capital, risk):
     lines.append(f"   Last close   : Rs {p.get('close', 0):,.2f}  ({p.get('chg_pct', 0):+.2f}%)")
     lines.append(f"   Entry zone   : Rs {tp.get('entry', 0):,.2f}")
     lines.append(f"   Stop-loss    : Rs {tp.get('sl', 0):,.2f}  (-{tp.get('sl_pct', 0):.1f}%)")
-    lines.append(f"   Target 1     : Rs {tp.get('t1', 0):,.2f}  (+{tp.get('t1_pct', 0):.1f}%)")
-    lines.append(f"   Target 2     : Rs {tp.get('t2', 0):,.2f}  (+{tp.get('t2_pct', 0):.1f}%)")
+    _fm = tp.get("mode") == "fast-move"
+    if _fm:
+        lines.append(f"   Target 1     : Rs {tp.get('t1', 0):,.2f}  (+{tp.get('t1_pct', 0):.1f}%)"
+                     f"  <- book {inr(tp.get('t1_qty', 0))} shares here")
+        lines.append(f"   Target 2     : Rs {tp.get('t2', 0):,.2f}  (+{tp.get('t2_pct', 0):.1f}%)"
+                     f"  <- book the rest ({inr(tp.get('t2_qty', 0))} shares)")
+        lines.append(f"   Hard exit    : close whatever is left on session "
+                     f"{tp.get('hold_sessions', 5)} (~1 week)")
+        lines.append(f"   Risk:Reward  : 1 : {tp.get('rr_t1', 0):.2f} to Target 1, "
+                     f"1 : {tp.get('rr_t2', 0):.2f} to Target 2")
+    else:
+        lines.append(f"   Target 1     : Rs {tp.get('t1', 0):,.2f}  (+{tp.get('t1_pct', 0):.1f}%)")
+        lines.append(f"   Target 2     : Rs {tp.get('t2', 0):,.2f}  (+{tp.get('t2_pct', 0):.1f}%)")
     lines.append(f"   Quantity     : {inr(tp.get('qty', 0))} shares")
     lines.append(f"   Capital used : Rs {inr(tp.get('notional', 0))} ({tp.get('notional_pct', 0):.0f}%)")
     lines.append(f"   Risk if SL   : Rs {inr(tp.get('risk_rs', 0))} = {risk}% of capital")
@@ -278,10 +289,19 @@ def compose(data, capital, risk):
                                   vol_ratio=p.get("vol_ratio_5_20", 1),
                                   atr_pct=p.get("atr_pct", 2),
                                   regime_bull=data.get("above50", False))
-        lines.append(f"   Success prob  : ~{_pr*100:.0f}% chance of hitting Target 1")
-        lines.append("      (historical estimate from 2-yr backtest of similar setups -")
-        lines.append("      NOT a guarantee. ~1 in 3 is the base rate.)")
+        if tp.get("mode") == "fast-move":
+            lines.append("   Hit-rate note : in high-ATR momentum names like this,")
+            lines.append("      a +2% move was touched within 5 sessions in ~68% of")
+            lines.append("      2,608 historical cases (median 2 sessions). That is a")
+            lines.append("      HIT RATE, not an edge: after the wider stop and")
+            lines.append("      costs the measured expectancy is roughly zero.")
+        if tp.get("mode") != "fast-move":
+            lines.append(f"   Success prob  : ~{_pr*100:.0f}% chance of hitting Target 1")
+            lines.append("      (historical estimate from 2-yr backtest of similar setups -")
+            lines.append("      NOT a guarantee. ~1 in 3 is the base rate.)")
         _f = data.get("filter") or {}
+        if _f.get("mode") == "fast-move":
+            lines.append(f"   ⚡ Screened for  : {_f.get('fast_move', 'fast 2% moves')}")
         if _f.get("enabled"):
             wk_txt = ""
             if _f.get("weekly_enabled"):
@@ -329,10 +349,19 @@ def compose(data, capital, risk):
     lines.append("     yesterday's close - a limit order ~0.3-0.5% below the")
     lines.append("     entry zone improves your average ~0.15R. Never chase a +3% gap.")
     lines.append("  2. Place the stop-loss immediately - it is your plan.")
-    lines.append("  3. Book half at Target 1, trail the rest to Target 2.")
-    lines.append("  4. Holding window: 1 day to ~1 week. No progress in")
-    lines.append("     5 sessions -> exit.")
-    lines.append("  5. Keep 2-3 positions max overall.")
+    if _fm:
+        lines.append(f"  3. Book ~{int(round(100 * (tp.get('t1_qty', 0) / max(1, tp.get('qty', 1)))))}% at Target 1 (+2%) — take the quick money.")
+        lines.append("     Trail/limit the balance to Target 2 (+4%). Do NOT move")
+        lines.append("     the stop down, do NOT average a loser.")
+        lines.append(f"  4. Hard exit: whatever is left gets sold on session "
+                     f"{tp.get('hold_sessions', 5)} if neither level is hit.")
+        lines.append("     A 2% target is a quick-money plan, not an investment.")
+        lines.append("  5. One position at a time, 2 max. Keep the rest in cash.")
+    else:
+        lines.append("  3. Book half at Target 1, trail the rest to Target 2.")
+        lines.append("  4. Holding window: 1 day to ~1 week. No progress in")
+        lines.append("     5 sessions -> exit.")
+        lines.append("  5. Keep 2-3 positions max overall.")
     lines.append("")
     lines.append("------------------------------------------------------")
     lines.append("Educational tool, NOT SEBI-registered investment advice.")
