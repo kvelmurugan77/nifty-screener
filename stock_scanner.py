@@ -54,6 +54,11 @@ try:
 except Exception:  # noqa: BLE001
     success_probability = None
 
+try:
+    import fastmove
+except Exception:  # noqa: BLE001
+    fastmove = None
+
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
@@ -100,6 +105,14 @@ MIN_BARS = 120                      # need at least this many daily bars
 MIN_AVG_SHARES = 300_000            # 20-day avg volume filter (shares)
 MIN_AVG_VALUE_CR = 10               # 20-day avg traded value filter (Rs crore)
 ATR_MIN_PCT, ATR_MAX_PCT = 1.0, 9.0 # volatility band for tradable names
+
+# NSE trading holidays (equity segment). Extend this list every January.
+NSE_HOLIDAYS = {
+    "2026-01-26", "2026-03-03", "2026-03-26", "2026-03-31", "2026-04-03",
+    "2026-04-14", "2026-05-01", "2026-05-28", "2026-06-26", "2026-09-14",
+    "2026-10-02", "2026-10-20", "2026-11-10", "2026-11-24", "2026-12-25",
+    "2027-01-26", "2027-03-23", "2027-04-02", "2027-04-14", "2027-05-01",
+}
 
 # Score weights (total 100 before penalties)
 W = {
@@ -238,8 +251,19 @@ def _market_is_open():
     now = ist_now()
     if now.weekday() >= 5:  # Sat / Sun
         return False
+    if now.date().isoformat() in NSE_HOLIDAYS:
+        return False
     secs = now.hour * 3600 + now.minute * 60 + now.second
     return 9 * 3600 + 15 * 60 <= secs <= 15 * 3600 + 30 * 60
+
+
+def market_closed_today():
+    """True on weekends and NSE trading holidays - no fresh session will arrive,
+    so any \"pick\" would just repeat the previous close (this fired 11 times
+    between Aug and Nov 2026: 8 weekends + Ganesh Chaturthi, Gandhi Jayanti,
+    Dussehra)."""
+    today = ist_now().date()
+    return today.weekday() >= 5 or today.isoformat() in NSE_HOLIDAYS
 
 
 # ----------------------------------------------------------------------------
@@ -805,7 +829,10 @@ def print_console(meta, regime, picks, avoids, failed, cfg, filter_info=None):
 
     if not picks:
         print("\n⚠ No stock passed the quality filters today. Best action: STAY IN CASH.")
-        if filter_info and filter_info.get("enabled"):
+        if filter_info and filter_info.get("mode") == "fast-move":
+            print(f"   ({filter_info.get('fast_move')} — {filter_info['gated_out']} stock(s) "
+                  f"were in the normal scan but failed the velocity gates.)")
+        elif filter_info and filter_info.get("enabled"):
             print(f"   (Improved filter: {filter_info['base_count']} candidates were "
                   f"checked, {filter_info['passed_count']} passed prob≥{filter_info['min_prob']:.0%} "
                   f"& RSI {filter_info['rsi_min']:.0f}-{filter_info['rsi_max']:.0f}.)")
@@ -817,7 +844,15 @@ def print_console(meta, regime, picks, avoids, failed, cfg, filter_info=None):
     print("\n" + "-" * 78)
     print(f"  🏆 PICK OF THE DAY : {p['ticker'].replace('.NS','')}  ({p['name']})   Score {p['total']:.0f}/100")
     print("-" * 78)
-    if filter_info and filter_info.get("enabled"):
+    if filter_info and filter_info.get("mode") == "fast-move":
+        print(f"  ⚡ Fast-move mode : {filter_info.get('fast_move')}")
+        print(f"     Velocity score : {p.get('fm_score', 0):.1f} · ATR {p['atr_pct']:.1f}% · "
+              f"5-day move {p.get('r5', 0):+.1f}% · vol {p.get('vol_ratio_5_20', 1):.2f}x "
+              f"({filter_info['passed_count']} candidates)")
+        if filter_info.get("cooldown_skipped"):
+            print(f"  🚫 Cooldown      : {filter_info['cooldown_skipped']} higher-ranked candidate(s) "
+                  f"skipped (picked in the last {filter_info['cooldown']} sessions)")
+    elif filter_info and filter_info.get("enabled"):
         print(f"  ✅ Improved filter: prob {p.get('prob', 0)*100:.1f}% ≥ {filter_info['min_prob']:.0%} · "
               f"RSI {p['rsi']:.1f} in {filter_info['rsi_min']:.0f}-{filter_info['rsi_max']:.0f}"
               + (f" · weekly RSI {p.get('weekly_rsi', 0):.1f} ≥ {filter_info['weekly_min']:.0f}"
@@ -839,7 +874,7 @@ def print_console(meta, regime, picks, avoids, failed, cfg, filter_info=None):
         print(f"  ⚠ CHASE GUARD    : {p['ticker'].replace('.NS','')} already moved "
               f"+{max(p.get('gap_pct', 0), p.get('chg_pct', 0)):.1f}% — DO NOT chase. "
               "Wait for a dip toward entry or skip.")
-    if p.get("prob") is not None:
+    if p.get("prob") is not None and not (filter_info and filter_info.get("mode") == "fast-move"):
         print(f"  Success prob    : ~{p['prob']*100:.0f}% chance of hitting Target 1 "
               f"(historical estimate, 2-yr backtest)")
     print(f"  Why             : {(' · '.join(p['reasons']) if p['reasons'] else 'trend + setup')} | RSI {p['rsi']:.0f} | ATR {p['atr_pct']:.1f}%")
@@ -847,11 +882,19 @@ def print_console(meta, regime, picks, avoids, failed, cfg, filter_info=None):
     print("\n" + "-" * 78)
     print("  TOP CANDIDATES")
     print("-" * 78)
-    hdr = f"  {'#':<3}{'Stock':<14}{'LTP':>10}{'Day%':>8}{'RSI':>6}{'ATR%':>7}{'Score':>7}"
-    print(hdr)
-    for i, q in enumerate(picks[:10], 1):
-        print(f"  {i:<3}{q['ticker'].replace('.NS',''):<14}{q['close']:>10,.2f}"
-              f"{q['chg_pct']:>+8.2f}{q['rsi']:>6.0f}{q['atr_pct']:>7.1f}{q['total']:>7.0f}")
+    _fast = bool(filter_info and filter_info.get("mode") == "fast-move")
+    if _fast:
+        print(f"  {'#':<3}{'Stock':<14}{'LTP':>10}{'Day%':>8}{'RSI':>6}{'ATR%':>7}{'5d%':>7}{'Vel':>7}")
+        for i, q in enumerate(picks[:10], 1):
+            print(f"  {i:<3}{q['ticker'].replace('.NS',''):<14}{q['close']:>10,.2f}"
+                  f"{q['chg_pct']:>+8.2f}{q['rsi']:>6.0f}{q['atr_pct']:>7.1f}"
+                  f"{q.get('r5', 0):>+7.1f}{q.get('fm_score', 0):>7.1f}")
+    else:
+        hdr = f"  {'#':<3}{'Stock':<14}{'LTP':>10}{'Day%':>8}{'RSI':>6}{'ATR%':>7}{'Score':>7}"
+        print(hdr)
+        for i, q in enumerate(picks[:10], 1):
+            print(f"  {i:<3}{q['ticker'].replace('.NS',''):<14}{q['close']:>10,.2f}"
+                  f"{q['chg_pct']:>+8.2f}{q['rsi']:>6.0f}{q['atr_pct']:>7.1f}{q['total']:>7.0f}")
 
     if avoids:
         print("\n  AVOID TODAY (distribution / weak):", ", ".join(
@@ -887,7 +930,16 @@ def main():
                          "re-picks <=10d avg -0.068R vs first-time +0.278R)")
     ap.add_argument("--no-cooldown", action="store_true",
                     help="disable the re-pick cooldown (not recommended)")
+    ap.add_argument("--classic", action="store_true",
+                    help="use the OLD breakout plan (1.2xATR stop, 1.5R/2.6R targets, 7 sessions) "
+                         "instead of the fast-move plan (2%/4% targets, 2xATR stop, 5 sessions)")
+    ap.add_argument("--size-mode", choices=("risk", "notional"), default="risk",
+                    help="risk: size so a stop-out costs exactly --risk%% of capital | "
+                         "notional: cap each position at 30%% of capital (bigger, but the rupee "
+                         "loss on a stop-out is larger than --risk%%)")
     args = ap.parse_args()
+    use_fast = (not args.classic) and fastmove is not None
+    fm_cfg = fastmove.CONFIG if fastmove is not None else None
 
     if args.risk <= 0 or args.risk > 5:
         sys.exit("Risk % must be between 0 and 5 (1–2 is the sane range for a beginner).")
@@ -910,7 +962,17 @@ def main():
         st = analyze(ticker, name, df, nifty_df)
         if st is not None:
             st["_closes"] = df["Close"].astype(float).tolist()
-            st["plan"] = trade_plan(st, args.capital, args.risk)
+            if use_fast:
+                ok, why_not = fastmove.gates(st, fm_cfg)
+                st["fm_gate"] = ok
+                st["fm_fail"] = why_not
+                st["fm_score"] = fastmove.velocity_score(st, fm_cfg)
+                if not ok:
+                    continue
+                st["plan"] = fastmove.fast_plan(st, args.capital, args.risk,
+                                                fm_cfg, size_mode=args.size_mode)
+            else:
+                st["plan"] = trade_plan(st, args.capital, args.risk)
             if st["plan"] is None:
                 continue
             if success_probability is not None:
@@ -922,13 +984,20 @@ def main():
                 st["prob"] = None
             stats.append(st)
 
-    stats.sort(key=lambda s: s["total"], reverse=True)
+    if use_fast:
+        stats.sort(key=lambda s: s.get("fm_score", 0), reverse=True)
+    else:
+        stats.sort(key=lambda s: s["total"], reverse=True)
     base_picks = [s for s in stats if s["total"] >= 40 and not (s["red_big"] or s["drop_big"])]
     # --- IMPROVED FILTER: probability + RSI sweet spot + weekly RSI trend ---
     # (each filter was measured on the 2-yr backtest; weekly RSI>=50 added a real
     #  gain while 200-DMA/combo filters HURT and were deliberately NOT added)
     use_weekly = not args.no_weekly_filter
-    if success_probability is not None:
+    # In fast-move mode the prob/RSI/weekly filters are skipped: they were
+    # fitted to the old 1.5R breakout plan, and applying them on top of the
+    # velocity gates cut the candidate list to almost nothing (measured: they
+    # removed the very high-ATR movers the fast plan is built around).
+    if success_probability is not None and not use_fast:
         picks = [s for s in base_picks
                  if s.get("prob", 0) >= args.min_prob
                  and args.rsi_min <= s["rsi"] <= args.rsi_max
@@ -944,7 +1013,8 @@ def main():
     use_cooldown = not args.no_cooldown and args.cooldown > 0
     history = load_pick_history() if use_cooldown else []
     recent_tickers = {}  # ticker -> last pick date (most recent entries first)
-    for e in history[:args.cooldown if args.cooldown > 0 else 0]:
+    # history is stored OLDEST-first, so the most recent picks are at the END
+    for e in (history[-args.cooldown:] if args.cooldown > 0 else []):
         t = e.get("ticker")
         if t and t not in recent_tickers:
             recent_tickers[t] = e.get("date", "")
@@ -959,7 +1029,11 @@ def main():
         picks = kept
     picks = picks[:10]
     filter_info = {
-        "enabled": success_probability is not None,
+        "mode": "fast-move" if use_fast else "classic",
+        "fast_move": (fastmove.describe(fm_cfg) if use_fast else None),
+        "gated_out": (sum(1 for s in stats if s.get("fm_gate") is False) if use_fast else 0),
+        "size_mode": args.size_mode if use_fast else None,
+        "enabled": (success_probability is not None and not use_fast),
         "min_prob": args.min_prob, "rsi_min": args.rsi_min, "rsi_max": args.rsi_max,
         "weekly_enabled": use_weekly,
         "weekly_min": args.weekly_rsi_min,
@@ -987,10 +1061,14 @@ def main():
               if t not in data]
 
     now = ist_now()
+    closed_today = market_closed_today()
+    if closed_today:
+        picks = []          # never publish a "pick" on a day the market is shut
     meta = {
         "date": now.strftime("%Y-%m-%d"),
         "time": now.strftime("%H:%M"),
         "market_open": _market_is_open(),
+        "market_closed": closed_today,
         "scanned": scanned,
     }
     cfg = {"capital": args.capital, "risk_pct": args.risk, "risk_rs": args.capital * args.risk / 100}
