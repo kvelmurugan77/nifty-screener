@@ -17,12 +17,10 @@
 #   * woke before 02:55  -> exit without sending; a later cron will catch it
 #                           (we never hold a runner for more than ~5.5 hours)
 #
-# Cron ladder (IST -> UTC cron), chosen so that a 3-9 hour delivery delay still
-# produces at least one run inside the 02:55-08:25 window:
-#   23:30  -> '0 18 * * 1-5'     02:00 -> '15 20 * * 1-5'
-#   00:30  -> '0 19 * * 1-5'     02:30 -> '45 20 * * 1-5'
-#   01:00  -> '30 19 * * 1-5'    fallback 08:17 -> '47 2 * * 1-5'
-#   01:30  -> '0 20 * * 1-5'     fallback 09:47 -> '17 4 * * 1-5'
+# The cron ladder runs 23:30 -> 09:47 IST, one trigger per hour, so that no
+# matter how late (or early) GitHub delivers them, at least one run lands in a
+# position to hold until 08:25. Runs that arrive before 02:55 exit immediately
+# (the sleep cap is 5h30m), runs after 09:20 send a [LATE]-flagged email.
 #
 # A .sent_marker cache keyed by the IST date keeps it idempotent: the first run
 # that is allowed to send does so; every later run no-ops in ~20 seconds.
@@ -37,13 +35,19 @@ name: Daily Email Scanner
 
 on:
   schedule:
+    # Ladder of crons through the night and morning (IST). Whatever one of
+    # these GitHub actually delivers, the job either sleeps to 08:25 IST or
+    # sends immediately if it is already past that.
     - cron: '0 18 * * 1-5'    # 23:30 IST
     - cron: '0 19 * * 1-5'    # 00:30 IST
-    - cron: '30 19 * * 1-5'   # 01:00 IST
     - cron: '0 20 * * 1-5'    # 01:30 IST
-    - cron: '15 20 * * 1-5'   # 02:00 IST
-    - cron: '45 20 * * 1-5'   # 02:30 IST
-    - cron: '47 2 * * 1-5'    # 08:17 IST  (fallback if everything else missed)
+    - cron: '0 21 * * 1-5'    # 02:30 IST  (too early to hold -> exits)
+    - cron: '0 22 * * 1-5'    # 03:30 IST  (first one that can hold to 08:25)
+    - cron: '0 23 * * 1-5'    # 04:30 IST
+    - cron: '0 0 * * 1-5'     # 05:30 IST
+    - cron: '0 1 * * 1-5'     # 06:30 IST
+    - cron: '0 2 * * 1-5'     # 07:30 IST
+    - cron: '47 2 * * 1-5'    # 08:17 IST
     - cron: '17 4 * * 1-5'    # 09:47 IST  (last resort, arrives as [LATE])
   workflow_dispatch:          # manual test button + external 08:20 IST trigger
 
