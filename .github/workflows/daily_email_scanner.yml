@@ -1,52 +1,58 @@
 # =====================================================================
 # Daily Email Scanner - sends the pick of the day every trading morning
 #
-# TARGET: email in the inbox by ~08:30 IST, Mon-Fri, before the 09:15 open.
+# TARGET: email in the inbox by ~08:30 IST (market opens 09:15).
 #
-# HOW DELIVERY WORKS (and why it kept arriving at 12:30 IST)
-# GitHub Actions cron is "best effort": runs are queued and can be delayed by
-# tens of minutes to hours, worst at the top of the hour. This repo was firing
-# a 08:30 IST trigger and the email landed at 12:39 IST on 2026-11-03.
+# THE PROBLEM THIS FILE SOLVES
+# GitHub Actions cron is "best effort" and on THIS repository it is far
+# worse than that: measured over 340 delivered scheduled runs, the median
+# delay between the cron time and the actual run is 6.8 HOURS. A 08:17 IST
+# cron delivered the email at 15:33 / 16:33 / 17:44 IST. That is why the
+# "morning" email kept arriving in the afternoon.
 #
-# Therefore two independent paths:
-#   1. EXTERNAL TRIGGER (reliable, primary): Google Apps Script posts to
-#      workflow_dispatch at 08:20 IST Mon-Fri. See apps_script_trigger.gs.
-#      This was working until 2026-10-02 and then silently stopped - almost
-#      certainly because the GitHub token inside the script was revoked.
-#   2. IN-REPO CRON (fallback): five off-peak triggers from 08:17 to 10:17 IST.
-#      The .sent_marker cache (actions/cache, keyed by UTC date) makes the job
-#      idempotent - the first trigger that fires sends, the rest no-op in ~20s.
+# THE FIX: TIME-GATED SENDING
+# We no longer expect GitHub to wake us at 08:30. Instead we schedule a
+# ladder of crons through the small hours and let the JOB decide whether it
+# is allowed to send:
+#   * a run that wakes up before 07:45 IST exits immediately (no email),
+#   * the first run that wakes up between 07:45 and 09:20 IST sends,
+#   * runs after 09:20 still send, but the email is flagged LATE so the
+#     numbers are never mistaken for a pre-open plan.
+# Because the delay is 5-8 hours, the small-hours crons are the ones that
+# land in the 07:45-09:20 window.
 #
-# The plan is always built on the previous session's settled data (the market
-# is closed before 09:15), so a late run is not dangerous, just useless for an
-# opening-bell trade. Tune the fallbacks if your inbox time matters more than
-# the exact data cut.
+#   IST     -> UTC cron            purpose
+#   23:30      0 18 * * 1-5        +7h delay -> ~06:30 (too early, exits)
+#   00:15     45 18 * * 1-5        +7h       -> ~07:15 (usually exits)
+#   01:00     30 19 * * 1-5        +7h       -> ~08:00  <- main sender
+#   01:45     15 20 * * 1-5        +7h       -> ~08:45  <- main sender
+#   02:30      0 21 * * 1-5        +7h       -> ~09:30 (late fallback)
+#   08:17     47 2 * * 1-5         +7h       -> ~15:00 (LATE fallback)
+#   09:47     17 4 * * 1-5         +7h       -> ~16:30 (LATE fallback)
 #
-# Credentials come from repository secrets (GMAIL_USER / GMAIL_APP_PASSWORD /
-# TO_EMAIL) with settings.json as a fallback.
+# A .sent_marker cache (keyed by the IST date) makes the job idempotent:
+# the first run allowed to send does so, every later run no-ops in ~20s.
+#
+# For a guaranteed on-the-dot 08:30 you still want an external trigger
+# (Google Apps Script / cron-job.org) hitting workflow_dispatch at 08:20 IST -
+# see apps_script_trigger.gs. workflow_dispatch always bypasses the time gate.
+#
+# Credentials: repository secrets GMAIL_USER / GMAIL_APP_PASSWORD / TO_EMAIL,
+# with settings.json as a fallback.
 # =====================================================================
 
 name: Daily Email Scanner
 
 on:
   schedule:
-    # GitHub's scheduler fires scheduled jobs LATE and the delay is worst on
-    # the hour / half hour, when everyone else's cron is queued (measured on
-    # this repo: a 08:30 IST trigger sent the email at 12:39 IST). So:
-    #   * every trigger sits on an off-peak minute (07/13/17/43/47),
-    #   * the first one is deliberately EARLY (08:17 IST) so a normal
-    #     10-20 minute delay lands right around the 08:30 target,
-    #   * the rest are fallbacks, and the .sent_marker cache makes whichever
-    #     one fires first the only one that sends.
-    # The real fix for on-time delivery is the EXTERNAL trigger
-    # (Google Apps Script / cron-job.org) hitting workflow_dispatch at
-    # 08:20 IST Mon-Fri - see apps_script_trigger.gs.
-    - cron: '47 2 * * 1-5'   # 08:17 IST  <- primary
-    - cron: '13 3 * * 1-5'   # 08:43 IST  <- fallback 1
-    - cron: '43 3 * * 1-5'   # 09:13 IST  <- fallback 2 (2 min before open)
-    - cron: '17 4 * * 1-5'   # 09:47 IST  <- late fallback (live-data banner)
-    - cron: '47 4 * * 1-5'   # 10:17 IST  <- last chance
-  workflow_dispatch:         # manual test button + the external 08:20 IST trigger
+    - cron: '0 18 * * 1-5'    # 23:30 IST
+    - cron: '45 18 * * 1-5'   # 00:15 IST
+    - cron: '30 19 * * 1-5'   # 01:00 IST  <- main sender
+    - cron: '15 20 * * 1-5'   # 01:45 IST  <- main sender
+    - cron: '0 21 * * 1-5'    # 02:30 IST
+    - cron: '47 2 * * 1-5'    # 08:17 IST  (late fallback)
+    - cron: '17 4 * * 1-5'    # 09:47 IST  (late fallback)
+  workflow_dispatch:          # manual button + external 08:20 IST trigger
 
 concurrency:
   group: daily-email-scanner
@@ -59,8 +65,6 @@ jobs:
     permissions:
       contents: write    # so we can commit picks_history.json back (cooldown memory)
     env:
-      # Gmail credentials from GitHub Secrets (safer than the public settings.json;
-      # daily_email.py falls back to settings.json if a secret is not set yet)
       GMAIL_USER: ${{ secrets.GMAIL_USER }}
       GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
       TO_EMAIL: ${{ secrets.TO_EMAIL }}
@@ -69,10 +73,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Compute date stamp (UTC) + log IST clock time
+      - name: Date stamp (IST) + log clock
         id: stamp
         run: |
-          echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+          echo "day=$(TZ=Asia/Kolkata date +%F)" >> "$GITHUB_OUTPUT"
           echo "IST now: $(TZ=Asia/Kolkata date '+%F %H:%M:%S')  (event: ${{ github.event_name }})"
 
       - name: Restore sent-marker (prevents duplicate emails)
@@ -86,29 +90,52 @@ jobs:
         run: |
           if [ -f .sent_marker ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "sent-marker found — a previous trigger already sent today; skipping"
+            echo "sent-marker found — a previous run already sent today's email; skipping"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Time gate (schedule runs only)
+        id: gate
+        run: |
+          # workflow_dispatch (manual test / external trigger) always sends.
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "manual dispatch — time gate bypassed"
+            exit 0
+          fi
+          DOW=$(TZ=Asia/Kolkata date +%u)      # 1=Mon .. 7=Sun
+          MINS=$(( $(TZ=Asia/Kolkata date +%H) * 60 + $(TZ=Asia/Kolkata date +%M) ))
+          OPEN_AT=$(( 7 * 60 + 45 ))           # 07:45 IST - do not send earlier
+          if [ "$DOW" -gt 5 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "weekend in IST — nothing to send"
+          elif [ "$MINS" -lt "$OPEN_AT" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "woke up at $(TZ=Asia/Kolkata date +%H:%M) IST — earlier than 07:45, waiting for a later trigger"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "woke up at $(TZ=Asia/Kolkata date +%H:%M) IST — allowed to send"
+          fi
+
       - name: Set up Python
-        if: steps.earlyskip.outputs.skip == 'false'
+        if: steps.earlyskip.outputs.skip == 'false' && steps.gate.outputs.skip == 'false'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install dependencies
-        if: steps.earlyskip.outputs.skip == 'false'
+        if: steps.earlyskip.outputs.skip == 'false' && steps.gate.outputs.skip == 'false'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run scanner and email pick of the day
-        if: steps.earlyskip.outputs.skip == 'false'
+        if: steps.earlyskip.outputs.skip == 'false' && steps.gate.outputs.skip == 'false'
         run: python daily_email.py
 
       - name: Commit pick history (cooldown memory)
-        if: steps.earlyskip.outputs.skip == 'false' && always()
+        if: steps.earlyskip.outputs.skip == 'false' && steps.gate.outputs.skip == 'false' && always()
         continue-on-error: true
         run: |
           git config user.name "github-actions[bot]"
@@ -123,7 +150,7 @@ jobs:
           fi
 
       - name: Save sent-marker
-        if: steps.earlyskip.outputs.skip == 'false' && always()
+        if: steps.earlyskip.outputs.skip == 'false' && steps.gate.outputs.skip == 'false' && always()
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
